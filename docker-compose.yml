@@ -1,0 +1,22 @@
+services:
+  gam-puppeteer-service:
+    build:
+      context: ..          # pasta pai (Códigos/), necessário para acessar gam-config-puppeteer/
+      dockerfile: gam-puppeteer-service/Dockerfile
+    container_name: gam-puppeteer-service
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3002:3002"   # só acessível localmente (Nginx faz o proxy)
+    volumes:
+      - browser-data:/app/browser-data   # sessão do Chrome persiste entre restarts
+    environment:
+      - PORT=3002
+      - CHROME_DEBUG_PORT=9222
+      - BROWSER_DATA_DIR=/app/browser-data
+      - DISPLAY=:99
+    # Xvfb precisa de /dev/shm maior para o Chrome
+    shm_size: '2gb'
+
+volumes:
+  browser-data:
+    driver: local
