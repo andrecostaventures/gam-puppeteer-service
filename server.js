@@ -29,7 +29,7 @@ app.get('/health', async (req, res) => {
  *  4. Executa a criação dos channels
  */
 app.post('/create-display-channels', async (req, res) => {
-  const { networkId, sources } = req.body || {};
+  const { networkId, sources, suffix } = req.body || {};
 
   if (!networkId || typeof networkId !== 'string') {
     return res.status(400).json({ error: 'networkId é obrigatório' });
@@ -63,8 +63,8 @@ app.post('/create-display-channels', async (req, res) => {
 
   // 3. Executa a criação dos channels
   try {
-    console.log(`[server] Criando channels — networkId=${networkId} sources=${sources.join(', ')}`);
-    const result = await createDisplayChannels(page, { networkId, sources });
+    console.log(`[server] Criando channels — networkId=${networkId} suffix=${suffix || 'hs'} sources=${sources.join(', ')}`);
+    const result = await createDisplayChannels(page, { networkId, sources, suffix });
     console.log(`[server] Concluído — criados=${result.created.length} pulados=${result.skipped.length}`);
 
     return res.json({
