@@ -1,6 +1,7 @@
 const express = require('express');
 const { getOrStartBrowser, ensureGAMLogin, isBrowserConnected } = require('./lib/browser');
 const { createDisplayChannels } = require('./lib/createDisplayChannels');
+const { createInventoryUrls } = require('./lib/createInventoryUrls');
 
 const app = express();
 app.use(express.json());
@@ -77,6 +78,67 @@ app.post('/create-display-channels', async (req, res) => {
     });
   } catch (e) {
     console.error('[server] Erro ao criar channels:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * POST /create-inventory-urls
+ * Body: { networkId: string, urls: string[] }
+ *
+ * Cadastra URLs no inventário do GAM (Inventory → URLs), uma por uma, com
+ * Inventory type = Display e Brand type = Branded (default). Pula as que já
+ * existem. Mesmo fluxo de browser/login do /create-display-channels.
+ */
+app.post('/create-inventory-urls', async (req, res) => {
+  const { networkId, urls } = req.body || {};
+
+  if (!networkId || typeof networkId !== 'string') {
+    return res.status(400).json({ error: 'networkId é obrigatório' });
+  }
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: 'urls deve ser um array não vazio' });
+  }
+
+  // 1. Obtém ou inicia o Chrome
+  let page;
+  try {
+    const conn = await getOrStartBrowser();
+    page = conn.page;
+    if (conn.wasStarted) {
+      console.log('[server] Chrome iniciado. Aguardando carregamento...');
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  } catch (e) {
+    return res.status(503).json({
+      error: `Não foi possível iniciar o Chrome: ${e.message}`,
+    });
+  }
+
+  // 2. Garante login no GAM (aguarda até 3 min se necessário)
+  const loggedIn = await ensureGAMLogin(page, networkId);
+  if (!loggedIn) {
+    return res.status(408).json({
+      error: 'Timeout de login: o usuário não fez login no GAM em 3 minutos. Tente novamente.',
+    });
+  }
+
+  // 3. Cadastra as URLs
+  try {
+    console.log(`[server] Cadastrando URLs — networkId=${networkId} total=${urls.length}`);
+    const result = await createInventoryUrls(page, { networkId, urls });
+    console.log(
+      `[server] Concluído — cadastradas=${result.created.length} puladas=${result.skipped.length} falhas=${result.failed.length}`
+    );
+
+    return res.json({
+      created: result.created,
+      skipped: result.skipped,
+      failed: result.failed,
+      log: result.log,
+    });
+  } catch (e) {
+    console.error('[server] Erro ao cadastrar URLs:', e.message);
     return res.status(500).json({ error: e.message });
   }
 });
