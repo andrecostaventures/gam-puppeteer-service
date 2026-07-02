@@ -1,7 +1,12 @@
 const express = require('express');
-const { getOrStartBrowser, ensureGAMLogin, isBrowserConnected } = require('./lib/browser');
+const {
+  ensureHealthyBrowser,
+  ensureGAMLogin,
+  isBrowserConnected,
+} = require('./lib/browser');
 const { createDisplayChannels } = require('./lib/createDisplayChannels');
 const { createInventoryUrls } = require('./lib/createInventoryUrls');
+const { acquire, release, runningCount, queuedCount, maxConcurrent } = require('./lib/concurrency');
 
 const app = express();
 app.use(express.json());
@@ -13,6 +18,11 @@ app.get('/health', async (req, res) => {
   res.json({
     status: 'ok',
     browser: connected ? 'connected' : 'disconnected',
+    concurrency: {
+      running: runningCount(),
+      queued: queuedCount(),
+      max: maxConcurrent(),
+    },
     message: connected
       ? 'Chrome conectado e pronto.'
       : 'Chrome não está rodando. Será iniciado automaticamente ao criar channels.',
@@ -21,13 +31,11 @@ app.get('/health', async (req, res) => {
 
 /**
  * POST /create-display-channels
- * Body: { networkId: string, sources: string[] }
+ * Body: { networkId: string, sources: string[], suffix?: string }
  *
- * Fluxo:
- *  1. Tenta conectar ao Chrome já aberto → se não, abre um novo
- *  2. Navega para o GAM e verifica login
- *  3. Se não logado → aguarda o usuário logar (até 3 min)
- *  4. Executa a criação dos channels
+ * Síncrono (o backend espera a resposta). Adquire uma vaga no semáforo global
+ * (compartilhado com o cadastro de URLs), roda em SUA PRÓPRIA ABA e garante um
+ * Chrome saudável (reciclando se travado) quando é a única automação ativa.
  */
 app.post('/create-display-channels', async (req, res) => {
   const { networkId, sources, suffix } = req.body || {};
@@ -39,31 +47,31 @@ app.post('/create-display-channels', async (req, res) => {
     return res.status(400).json({ error: 'sources deve ser um array não vazio' });
   }
 
-  // 1. Obtém ou inicia o Chrome
-  let page;
+  // Espera uma vaga por até 2 min; se o sistema estiver cheio, responde 429.
   try {
-    const conn = await getOrStartBrowser();
-    page = conn.page;
-    if (conn.wasStarted) {
-      console.log('[server] Chrome iniciado. Aguardando carregamento...');
-      await new Promise(r => setTimeout(r, 3000));
-    }
+    await acquire(120_000);
   } catch (e) {
-    return res.status(503).json({
-      error: `Não foi possível iniciar o Chrome: ${e.message}`,
+    return res.status(429).json({
+      error: e.message,
+      running: runningCount(),
+      maxConcurrent: maxConcurrent(),
     });
   }
 
-  // 2. Garante login no GAM (aguarda até 3 min se necessário)
-  const loggedIn = await ensureGAMLogin(page, networkId);
-  if (!loggedIn) {
-    return res.status(408).json({
-      error: 'Timeout de login: o usuário não fez login no GAM em 3 minutos. Tente novamente.',
-    });
-  }
-
-  // 3. Executa a criação dos channels
+  const soleJob = runningCount() === 1;
+  let page = null;
   try {
+    const browser = await ensureHealthyBrowser(soleJob);
+    page = await browser.newPage();
+    await page.setViewport({ width: 1366, height: 900 });
+
+    const loggedIn = await ensureGAMLogin(page, networkId);
+    if (!loggedIn) {
+      return res.status(408).json({
+        error: 'Timeout de login: o usuário não fez login no GAM em 3 minutos. Tente novamente.',
+      });
+    }
+
     console.log(`[server] Criando channels — networkId=${networkId} suffix=${suffix || 'hs'} sources=${sources.join(', ')}`);
     const result = await createDisplayChannels(page, { networkId, sources, suffix });
     console.log(`[server] Concluído — criados=${result.created.length} pulados=${result.skipped.length}`);
@@ -79,25 +87,44 @@ app.post('/create-display-channels', async (req, res) => {
   } catch (e) {
     console.error('[server] Erro ao criar channels:', e.message);
     return res.status(500).json({ error: e.message });
+  } finally {
+    if (page) {
+      try { await page.close(); } catch { /* aba já fechada — ok */ }
+    }
+    release();
   }
 });
 
 /**
- * Estado do job de cadastro de URLs (em memória — uma instância só).
- * Listas grandes demoram (cadastro é sequencial na UI), então o processamento
- * roda em segundo plano e o cliente faz polling em GET /create-inventory-urls/:jobId.
- * Isso evita manter uma requisição HTTP aberta por minutos (timeout de proxy).
+ * Jobs de cadastro de URLs (Inventory → URLs).
+ *
+ * Cada job roda em SUA PRÓPRIA ABA e disputa vaga no MESMO semáforo global das
+ * demais automações (ver lib/concurrency.js). O droplet é pequeno, então o
+ * limite de execuções simultâneas (channels + urls somados) é MAX_CONCURRENT_
+ * AUTOMATIONS. A automação usa eventos sintéticos, então não depende da aba
+ * estar em foco — por isso várias abas processam sem brigar por foco.
+ *
+ * O estado de cada job fica num Map; o cliente acompanha por polling em
+ * GET /create-inventory-urls/:jobId (evita HTTP longo / timeout de proxy).
  */
-let urlJob = null;
+const urlJobs = new Map(); // jobId -> { id, tag, networkId, status, total, done, created, skipped, failed, result, error, startedAt, finishedAt }
+
+/** Remove jobs finalizados há mais de 1h para o Map não crescer sem limite. */
+function pruneOldUrlJobs() {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [id, j] of urlJobs) {
+    if (j.status !== 'running' && (j.finishedAt || 0) < cutoff) urlJobs.delete(id);
+  }
+}
 
 /**
  * POST /create-inventory-urls
  * Body: { networkId: string, urls: string[] }
- * Resposta: 202 { jobId } — o trabalho roda em background.
+ * Resposta: 202 { jobId } — o trabalho roda em background, em aba própria.
+ *           429 se não houver vaga no semáforo global.
  *
  * Cadastra URLs no inventário do GAM (Inventory → URLs), uma por uma, com
- * Inventory type = Display e Brand type = Branded (default). Pula as que já
- * existem. Mesmo fluxo de browser/login do /create-display-channels.
+ * Inventory type = Display e Brand type = Branded (default). Pula as que já existem.
  */
 app.post('/create-inventory-urls', (req, res) => {
   const { networkId, urls } = req.body || {};
@@ -108,69 +135,125 @@ app.post('/create-inventory-urls', (req, res) => {
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: 'urls deve ser um array não vazio' });
   }
-  if (urlJob && urlJob.status === 'running') {
-    return res.status(409).json({
-      error: 'Já existe um cadastro de URLs em andamento. Aguarde terminar.',
-      jobId: urlJob.id,
+
+  pruneOldUrlJobs();
+
+  // Rejeição adiantada quando já está lotado (o semáforo ainda garante o limite
+  // real, mas isso dá um erro claro sem criar job fantasma).
+  if (runningCount() >= maxConcurrent()) {
+    console.warn(
+      `[server] ⛔ Sem vaga (${runningCount()}/${maxConcurrent()}) — job de URLs recusado para net=${networkId}.`
+    );
+    return res.status(429).json({
+      error: `Limite de ${maxConcurrent()} execuções simultâneas atingido. Aguarde alguma terminar e tente de novo.`,
+      running: runningCount(),
+      maxConcurrent: maxConcurrent(),
     });
   }
 
-  const jobId = String(Date.now());
-  urlJob = { id: jobId, status: 'running', result: null, error: null, startedAt: Date.now() };
+  const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const tag = `${networkId}#${jobId.slice(-5)}`;
+  const job = {
+    id: jobId,
+    tag,
+    networkId,
+    status: 'running',
+    total: urls.length,
+    done: 0,
+    created: 0,
+    skipped: 0,
+    failed: 0,
+    result: null,
+    error: null,
+    startedAt: Date.now(),
+    finishedAt: null,
+  };
+  urlJobs.set(jobId, job);
 
   res.status(202).json({ jobId });
 
-  // Processamento em segundo plano
-  (async () => {
-    try {
-      // 1. Obtém ou inicia o Chrome
-      const conn = await getOrStartBrowser();
-      const page = conn.page;
-      if (conn.wasStarted) {
-        console.log('[server] Chrome iniciado. Aguardando carregamento...');
-        await new Promise(r => setTimeout(r, 3000));
-      }
+  console.log(
+    `\n[server] ▶️  INÍCIO job ${tag} — ${urls.length} URLs | rodando agora: ${runningCount()}/${maxConcurrent()}`
+  );
 
-      // 2. Garante login no GAM (aguarda até 3 min se necessário)
+  // Processamento em segundo plano, em ABA PRÓPRIA.
+  (async () => {
+    let page = null;
+    let slotHeld = false;
+    try {
+      await acquire(); // espera vaga no semáforo global
+      slotHeld = true;
+
+      const soleJob = runningCount() === 1;
+      const browser = await ensureHealthyBrowser(soleJob);
+      page = await browser.newPage();
+      await page.setViewport({ width: 1366, height: 900 });
+
+      // Login no GAM (sessão compartilhada — normalmente já logado, retorna na hora)
       const loggedIn = await ensureGAMLogin(page, networkId);
       if (!loggedIn) {
         throw new Error('Timeout de login: ninguém fez login no GAM em 3 minutos. Tente novamente.');
       }
 
-      // 3. Cadastra as URLs
-      console.log(`[server] Cadastrando URLs — networkId=${networkId} total=${urls.length}`);
-      const result = await createInventoryUrls(page, { networkId, urls });
+      const result = await createInventoryUrls(page, {
+        networkId,
+        urls,
+        tag,
+        onProgress: (p) => {
+          job.done = p.done;
+          job.created = p.created;
+          job.skipped = p.skipped;
+          job.failed = p.failed;
+        },
+      });
+
+      job.result = result;
+      job.status = 'done';
+      job.finishedAt = Date.now();
+      const secs = Math.round((job.finishedAt - job.startedAt) / 1000);
       console.log(
-        `[server] Concluído — cadastradas=${result.created.length} puladas=${result.skipped.length} falhas=${result.failed.length}`
+        `[server] ✅ FIM job ${tag} — criadas=${result.created.length} puladas=${result.skipped.length} falhas=${result.failed.length} em ${secs}s | ainda rodando: ${Math.max(0, runningCount() - 1)}/${maxConcurrent()}`
       );
-      urlJob = { ...urlJob, status: 'done', result, finishedAt: Date.now() };
     } catch (e) {
-      console.error('[server] Erro ao cadastrar URLs:', e.message);
-      urlJob = { ...urlJob, status: 'error', error: e.message, finishedAt: Date.now() };
+      job.status = 'error';
+      job.error = e.message;
+      job.finishedAt = Date.now();
+      console.error(`[server] ❌ ERRO job ${tag} — ${e.message}`);
+    } finally {
+      if (page) {
+        try { await page.close(); } catch { /* aba já fechada — ok */ }
+      }
+      if (slotHeld) release();
     }
   })();
 });
 
 /**
  * GET /create-inventory-urls/:jobId
- * Resposta: { status: 'running'|'done'|'error', result?, error? }
+ * Resposta: { status, networkId, progress: {done,total,created,skipped,failed}, result?, error? }
  */
 app.get('/create-inventory-urls/:jobId', (req, res) => {
-  if (!urlJob || urlJob.id !== req.params.jobId) {
+  const job = urlJobs.get(req.params.jobId);
+  if (!job) {
     return res.status(404).json({ error: 'Job não encontrado' });
   }
   return res.json({
-    status: urlJob.status,
-    result: urlJob.result,
-    error: urlJob.error,
+    status: job.status,
+    networkId: job.networkId,
+    progress: {
+      done: job.done,
+      total: job.total,
+      created: job.created,
+      skipped: job.skipped,
+      failed: job.failed,
+    },
+    result: job.result,
+    error: job.error,
   });
 });
 
 app.listen(PORT, () => {
   console.log(`gam-puppeteer-service rodando na porta ${PORT}`);
   console.log(`Health: http://localhost:${PORT}/health`);
-  console.log(`\nFluxo ao clicar "Criar channels":`);
-  console.log(`  1. Chrome abre automaticamente (se não estiver aberto)`);
-  console.log(`  2. Navega para o GAM — faz login se necessário`);
-  console.log(`  3. Executa a criação dos channels`);
+  console.log(`Concorrência: até ${maxConcurrent()} automações simultâneas (channels + URLs somados, cada uma em sua aba).`);
 });

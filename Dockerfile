@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     wget \
     xvfb \
+    x11vnc \
     # Dependências do Chrome
     libnss3 \
     libatk-bridge2.0-0 \
@@ -60,10 +61,16 @@ ENV PORT=3002
 ENV CHROME_DEBUG_PORT=9222
 ENV BROWSER_DATA_DIR=/app/browser-data
 ENV DISPLAY=:99
+# Porta do servidor VNC (x11vnc) que espelha o display :99 — usado para login manual no GAM
+ENV VNC_PORT=5900
 
 EXPOSE 3002
+EXPOSE 5900
 
-# Inicia Xvfb (display virtual) e depois o servidor Node
+# Inicia Xvfb (display virtual), x11vnc (espelha :99 para login manual) e o servidor Node.
+# x11vnc escuta em 0.0.0.0 dentro do container para o docker-proxy conseguir encaminhar;
+# no host a porta é publicada só em 127.0.0.1 (compose), então o acesso externo é via túnel SSH.
 CMD Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset & \
-    sleep 1 && \
+    sleep 2 && \
+    x11vnc -display :99 -forever -shared -rfbport ${VNC_PORT} -nopw -quiet -bg && \
     node server.js

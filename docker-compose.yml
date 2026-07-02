@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:3002:3002"   # só acessível localmente (Nginx faz o proxy)
+      - "127.0.0.1:5900:5900"   # VNC (x11vnc do display :99) — acesso só via túnel SSH
     volumes:
       - /opt/gam-puppeteer-service/browser-data:/app/browser-data   # sessão do Chrome persiste entre restarts
     environment:
@@ -14,6 +15,7 @@ services:
       - CHROME_DEBUG_PORT=9222
       - BROWSER_DATA_DIR=/app/browser-data
       - DISPLAY=:99
+      - VNC_PORT=5900
     # Xvfb precisa de /dev/shm maior para o Chrome
     shm_size: '2gb'
 
