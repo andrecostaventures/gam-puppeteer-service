@@ -30,14 +30,31 @@ app.get('/health', async (req, res) => {
 });
 
 /**
+ * Jobs de criação de Display Channels.
+ *
+ * Assíncrono, mesmo padrão do cadastro de URLs: o POST devolve 202 { jobId }
+ * na hora e o trabalho roda em background numa aba própria. O cliente acompanha
+ * por polling em GET /create-display-channels/:jobId. Isso evita HTTP longo, que
+ * era cortado pelo proxy reverso (Cloudflare/nginx) e gerava "fetch failed" no
+ * backend mesmo quando a criação terminava com sucesso no GAM.
+ */
+const channelJobs = new Map(); // jobId -> { id, tag, networkId, status, total, done, created, skipped, result, error, startedAt, finishedAt }
+
+/** Remove jobs finalizados há mais de 1h para o Map não crescer sem limite. */
+function pruneOldChannelJobs() {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [id, j] of channelJobs) {
+    if (j.status !== 'running' && (j.finishedAt || 0) < cutoff) channelJobs.delete(id);
+  }
+}
+
+/**
  * POST /create-display-channels
  * Body: { networkId: string, sources: string[], suffix?: string }
- *
- * Síncrono (o backend espera a resposta). Adquire uma vaga no semáforo global
- * (compartilhado com o cadastro de URLs), roda em SUA PRÓPRIA ABA e garante um
- * Chrome saudável (reciclando se travado) quando é a única automação ativa.
+ * Resposta: 202 { jobId } — o trabalho roda em background, em aba própria.
+ *           429 se não houver vaga no semáforo global.
  */
-app.post('/create-display-channels', async (req, res) => {
+app.post('/create-display-channels', (req, res) => {
   const { networkId, sources, suffix } = req.body || {};
 
   if (!networkId || typeof networkId !== 'string') {
@@ -47,52 +64,124 @@ app.post('/create-display-channels', async (req, res) => {
     return res.status(400).json({ error: 'sources deve ser um array não vazio' });
   }
 
-  // Espera uma vaga por até 2 min; se o sistema estiver cheio, responde 429.
-  try {
-    await acquire(120_000);
-  } catch (e) {
+  pruneOldChannelJobs();
+
+  // Rejeição adiantada quando já está lotado (o semáforo ainda garante o limite
+  // real, mas isso dá um erro claro sem criar job fantasma).
+  if (runningCount() >= maxConcurrent()) {
+    console.warn(
+      `[server] ⛔ Sem vaga (${runningCount()}/${maxConcurrent()}) — job de channels recusado para net=${networkId}.`
+    );
     return res.status(429).json({
-      error: e.message,
+      error: `Limite de ${maxConcurrent()} execuções simultâneas atingido. Aguarde alguma terminar e tente de novo.`,
       running: runningCount(),
       maxConcurrent: maxConcurrent(),
     });
   }
 
-  const soleJob = runningCount() === 1;
-  let page = null;
-  try {
-    const browser = await ensureHealthyBrowser(soleJob);
-    page = await browser.newPage();
-    await page.setViewport({ width: 1366, height: 900 });
+  const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const tag = `${networkId}#${jobId.slice(-5)}`;
+  const job = {
+    id: jobId,
+    tag,
+    networkId,
+    status: 'running',
+    total: 0,
+    done: 0,
+    created: 0,
+    skipped: 0,
+    result: null,
+    error: null,
+    startedAt: Date.now(),
+    finishedAt: null,
+  };
+  channelJobs.set(jobId, job);
 
-    const loggedIn = await ensureGAMLogin(page, networkId);
-    if (!loggedIn) {
-      return res.status(408).json({
-        error: 'Timeout de login: o usuário não fez login no GAM em 3 minutos. Tente novamente.',
+  res.status(202).json({ jobId });
+
+  console.log(
+    `\n[server] ▶️  INÍCIO job channels ${tag} — suffix=${suffix || 'hs'} sources=${sources.join(', ')} | rodando agora: ${runningCount()}/${maxConcurrent()}`
+  );
+
+  // Processamento em segundo plano, em ABA PRÓPRIA.
+  (async () => {
+    let page = null;
+    let slotHeld = false;
+    try {
+      await acquire(); // espera vaga no semáforo global
+      slotHeld = true;
+
+      const soleJob = runningCount() === 1;
+      const browser = await ensureHealthyBrowser(soleJob);
+      page = await browser.newPage();
+      await page.setViewport({ width: 1366, height: 900 });
+
+      const loggedIn = await ensureGAMLogin(page, networkId);
+      if (!loggedIn) {
+        throw new Error('Timeout de login: o usuário não fez login no GAM em 3 minutos. Tente novamente.');
+      }
+
+      const result = await createDisplayChannels(page, {
+        networkId,
+        sources,
+        suffix,
+        onProgress: (p) => {
+          job.total = p.total;
+          job.done = p.done;
+          job.created = p.created;
+          job.skipped = p.skipped;
+        },
       });
-    }
 
-    console.log(`[server] Criando channels — networkId=${networkId} suffix=${suffix || 'hs'} sources=${sources.join(', ')}`);
-    const result = await createDisplayChannels(page, { networkId, sources, suffix });
-    console.log(`[server] Concluído — criados=${result.created.length} pulados=${result.skipped.length}`);
-
-    return res.json({
-      created: result.created,
-      skipped: result.skipped,
-      log: [
-        `Criados (${result.created.length}): ${result.created.join(', ') || 'nenhum'}`,
-        `Já existiam (${result.skipped.length}): ${result.skipped.join(', ') || 'nenhum'}`,
-      ],
-    });
-  } catch (e) {
-    console.error('[server] Erro ao criar channels:', e.message);
-    return res.status(500).json({ error: e.message });
-  } finally {
-    if (page) {
-      try { await page.close(); } catch { /* aba já fechada — ok */ }
+      job.result = {
+        created: result.created,
+        skipped: result.skipped,
+        log: [
+          `Criados (${result.created.length}): ${result.created.join(', ') || 'nenhum'}`,
+          `Já existiam (${result.skipped.length}): ${result.skipped.join(', ') || 'nenhum'}`,
+        ],
+      };
+      job.status = 'done';
+      job.finishedAt = Date.now();
+      const secs = Math.round((job.finishedAt - job.startedAt) / 1000);
+      console.log(
+        `[server] ✅ FIM job channels ${tag} — criados=${result.created.length} pulados=${result.skipped.length} em ${secs}s | ainda rodando: ${Math.max(0, runningCount() - 1)}/${maxConcurrent()}`
+      );
+    } catch (e) {
+      job.status = 'error';
+      job.error = e.message;
+      job.finishedAt = Date.now();
+      console.error(`[server] ❌ ERRO job channels ${tag} — ${e.message}`);
+    } finally {
+      if (page) {
+        try { await page.close(); } catch { /* aba já fechada — ok */ }
+      }
+      if (slotHeld) release();
     }
-    release();
+  })();
+});
+
+/**
+ * GET /create-display-channels/:jobId
+ * Resposta: { status, networkId, progress: {done,total,created,skipped}, result?, error? }
+ */
+app.get('/create-display-channels/:jobId', (req, res) => {
+  const job = channelJobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job não encontrado' });
   }
+  return res.json({
+    status: job.status,
+    networkId: job.networkId,
+    progress: {
+      done: job.done,
+      total: job.total,
+      created: job.created,
+      skipped: job.skipped,
+    },
+    result: job.result,
+    error: job.error,
+  });
 });
 
 /**
