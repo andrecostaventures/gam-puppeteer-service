@@ -70,7 +70,10 @@ EXPOSE 5900
 # Inicia Xvfb (display virtual), x11vnc (espelha :99 para login manual) e o servidor Node.
 # x11vnc escuta em 0.0.0.0 dentro do container para o docker-proxy conseguir encaminhar;
 # no host a porta é publicada só em 127.0.0.1 (compose), então o acesso externo é via túnel SSH.
-CMD Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset & \
+# A trava do display sobra no container depois de um restart (docker restart ou restart: unless-stopped)
+# e o Xvfb recusa subir ("Server is already active for display 99"): apaga antes de iniciar.
+CMD rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 && \
+    Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset & \
     sleep 2 && \
     x11vnc -display :99 -forever -shared -rfbport ${VNC_PORT} -nopw -quiet -bg && \
     node server.js
