@@ -1,0 +1,43 @@
+{
+ "dom": "cvtesterpc1794513889710p.com",
+ "c1_caminho_barra": {
+  "status": 200,
+  "body": "{\"result\":{\"1279\":[{\"1006\":\"cvtesterpc1794513889710p.com/artigo-um\",\"2142\":855711302,\"2494\":true,\"3040\":1669513305,\"3473\":\"1593400228\"}]}}"
+ },
+ "c2_caminho_sem_barra": {
+  "status": 200,
+  "body": "{\"result\":{\"1279\":[{\"1006\":\"cvtesterpc1794513889710p.com/artigo-dois\",\"2142\":855711302,\"2494\":true,\"3040\":1669513305,\"3473\":\"1593400231\"}]}}"
+ },
+ "c3_www": {
+  "status": 200,
+  "body": "{\"result\":{\"1279\":[{\"1006\":\"www.cvtesterpc1794513889710p.com/artigo-tres\",\"2142\":855711302,\"2494\":true,\"3040\":1669513305,\"3473\":\"1593400681\"}]}}"
+ },
+ "c4_maiusc": {
+  "status": 200,
+  "body": "{\"result\":{\"1279\":[{\"1006\":\"cvtesterpc1794513889710p.com/Artigo-Quatro\",\"2142\":855711302,\"2494\":true,\"3040\":1669513305,\"3473\":\"1593400234\"}]}}"
+ },
+ "r1_sem_barra_de_c1": {
+  "status": 200,
+  "body": "{\"result\":{\"2428\":{\"2\":1967308805,\"2127\":{\"517\":[{\"2\":842255907,\"900\":\"\",\"1060\":\"\",\"1715\":{\"1386\":{\"2\":1838508364,\"401\":{},\"900\":\"\",\"951\":[{\"1288\":0},{\"405\":\"url\"}],\"1060\":\"cvtesterpc1794513889710p.com/artigo-um\",\"1467\":\"UniqueError.NOT_UNIQUE\",\"2869\":\"[0].url\"},\"3893\":\"Field is not unique. Please choose a unique value.\"},\"2869\":\"\"}]},\"2286\":\"[LocalizedErrorWrapper\\u003cUniqueError.NOT_UNIQUE @ [0].url; trigger:'cvtesterpc1794513889710p.com/artigo-um'; errorString: UniqueError.NOT_UNIQUE\\u003e]\"}}}"
+ },
+ "r2_com_barra_de_c2": {
+  "status": 200,
+  "body": "{\"result\":{\"2428\":{\"2\":1967308805,\"2127\":{\"517\":[{\"2\":842255907,\"900\":\"\",\"1060\":\"\",\"1715\":{\"1386\":{\"2\":1838508364,\"401\":{},\"900\":\"\",\"951\":[{\"1288\":0},{\"405\":\"url\"}],\"1060\":\"cvtesterpc1794513889710p.com/artigo-dois\",\"1467\":\"UniqueError.NOT_UNIQUE\",\"2869\":\"[0].url\"},\"3893\":\"Field is not unique. Please choose a unique value.\"},\"2869\":\"\"}]},\"2286\":\"[LocalizedErrorWrapper\\u003cUniqueError.NOT_UNIQUE @ [0].url; trigger:'cvtesterpc1794513889710p.com/artigo-dois'; errorString: UniqueError.NOT_UNIQUE\\u003e]\"}}}"
+ },
+ "r3_sem_www_de_c3": {
+  "status": 200,
+  "body": "{\"result\":{\"1279\":[{\"1006\":\"cvtesterpc1794513889710p.com/artigo-tres\",\"2142\":855711302,\"2494\":true,\"3040\":1669513305,\"3473\":\"1593457115\"}]}}"
+ },
+ "r4_minusc_de_c4": {
+  "status": 200,
+  "body": "{\"result\":{\"2428\":{\"2\":1967308805,\"2127\":{\"517\":[{\"2\":842255907,\"900\":\"\",\"1060\":\"\",\"1715\":{\"1386\":{\"2\":1838508364,\"401\":{},\"900\":\"\",\"951\":[{\"1288\":0},{\"405\":\"url\"}],\"1060\":\"cvtesterpc1794513889710p.com/artigo-quatro\",\"1467\":\"UniqueError.NOT_UNIQUE\",\"2869\":\"[0].url\"},\"3893\":\"Field is not unique. Please choose a unique value.\"},\"2869\":\"\"}]},\"2286\":\"[LocalizedErrorWrapper\\u003cUniqueError.NOT_UNIQUE @ [0].url; trigger:'cvtesterpc1794513889710p.com/artigo-quatro'; errorString: UniqueError.NOT_UNIQUE\\u003e]\"}}}"
+ },
+ "r5_https_de_c2": {
+  "status": 200,
+  "body": "{\"result\":{\"2428\":{\"2\":1967308805,\"2127\":{\"517\":[{\"2\":842255907,\"900\":\"\",\"1060\":\"\",\"1715\":{\"1386\":{\"2\":1838508364,\"401\":{},\"900\":\"\",\"951\":[{\"1288\":0},{\"405\":\"url\"}],\"1060\":\"cvtesterpc1794513889710p.com/artigo-dois\",\"1467\":\"UniqueError.NOT_UNIQUE\",\"2869\":\"[0].url\"},\"3893\":\"Field is not unique. Please choose a unique value.\"},\"2869\":\"\"}]},\"2286\":\"[LocalizedErrorWrapper\\u003cUniqueError.NOT_UNIQUE @ [0].url; trigger:'cvtesterpc1794513889710p.com/artigo-dois'; errorString: UniqueError.NOT_UNIQUE\\u003e]\"}}}"
+ },
+ "leitura": {
+  "status": 200,
+  "body": "{\"result\":{\"3494\":{\"246\":[{\"320\":1981034679,\"3318\":\"id\"},{\"320\":2571565,\"3318\":\"url\"},{\"320\":782694408,\"3318\":\"active\"}],\"1888\":[{\"1896\":[{\"2\":295958873,\"1807\":{\"1100\":\"1593400228\",\"2192\":true}},{\"2\":1234524931,\"3209\":{\"3184\":\"cvtesterpc1794513889710p.com/artigo-um\"}},{\"2\":652619562,\"2383\":{\"1426\":true}}]},{\"1896\":[{\"2\":295958873,\"1807\":{\"1100\":\"1593400231\",\"2192\":true}},{\"2\":1234524931,\"3209\":{\"3184\":\"cvtesterpc1794513889710p.com/artigo-dois\"}},{\"2\":652619562,\"2383\":{\"1426\":true}}]},{\"1896\":[{\"2\":295958873,\"1807\":{\"1100\":\"1593400234\",\"2192\":true}},{\"2\":1234524931,\"3209\":{\"3184\":\"cvtesterpc1794513889710p.com/Artigo-Quatro\"}},{\"2\":652619562,\"2383\":{\"1426\":true}}]},{\"1896\":[{\"2\":295958873,\"180"
+ }
+}

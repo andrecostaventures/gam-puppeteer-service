@@ -6,6 +6,7 @@ const {
 } = require('./lib/browser');
 const { createDisplayChannels } = require('./lib/createDisplayChannels');
 const { createInventoryUrls } = require('./lib/createInventoryUrls');
+const { createInventoryUrlsRpc } = require('./lib/createInventoryUrlsRpc');
 const { acquire, release, runningCount, queuedCount, maxConcurrent } = require('./lib/concurrency');
 
 const app = express();
@@ -207,6 +208,75 @@ function pruneOldUrlJobs() {
 }
 
 /**
+ * Cadastro de URLs: RPC primeiro (lib/createInventoryUrlsRpc.js); com contrato
+ * alterado ou leitura passageira esgotada, só as URLs ainda sem resultado seguem
+ * pelo formulário. INVENTORY_URLS_MODE=puppeteer usa só o formulário.
+ * INVENTORY_URLS_REACTIVATE=true liga a ativação de URL inativa (D3).
+ */
+async function runUrlsJob(page, job, networkId, urls, tag) {
+  const progress = (base) => (p) => {
+    job.done = base.done + p.done;
+    job.created = base.created + p.created;
+    job.skipped = base.skipped + p.skipped;
+    job.failed = base.failed + p.failed;
+  };
+  const zero = { done: 0, created: 0, skipped: 0, failed: 0 };
+
+  if ((process.env.INVENTORY_URLS_MODE || 'rpc').toLowerCase() === 'puppeteer') {
+    const form = await createInventoryUrls(page, { networkId, urls, tag, onProgress: progress(zero) });
+    return { ...form, reactivated: [], method: 'puppeteer' };
+  }
+
+  const rpc = await createInventoryUrlsRpc(page, {
+    networkId,
+    urls,
+    tag,
+    onProgress: progress(zero),
+    reactivate: process.env.INVENTORY_URLS_REACTIVATE === 'true',
+  });
+  const { pending, fallbackReason, contractDetail, contractWarning, log } = rpc;
+  const result = {
+    created: rpc.created,
+    skipped: rpc.skipped,
+    failed: rpc.failed,
+    reactivated: rpc.reactivated,
+    log: [...log],
+    method: 'rpc',
+  };
+  const warnings = [];
+  if (contractDetail) {
+    warnings.push(
+      pending.length
+        ? `O GAM mudou a chamada de cadastro de URLs (${contractDetail}). O cadastro seguiu pelo formulário, mais lento. Avise o time de dev.`
+        : `O GAM mudou a chamada de cadastro de URLs (${contractDetail}). Avise o time de dev.`
+    );
+  }
+  if (contractWarning) warnings.push(contractWarning);
+
+  if (pending.length) {
+    console.log(`[${tag}] ${pending.length} URL(s) sem resultado no RPC (${fallbackReason || 'sem confirmação'}) — seguindo pelo formulário.`);
+    const rpcResolved = result.created.length + result.skipped.length + result.failed.length + result.reactivated.length;
+    const base = {
+      done: job.done,
+      created: result.created.length + result.reactivated.length,
+      skipped: result.skipped.length,
+      failed: result.failed.length,
+    };
+    const form = await createInventoryUrls(page, { networkId, urls: pending, tag, onProgress: progress(base) });
+    result.created.push(...form.created);
+    result.skipped.push(...form.skipped);
+    result.failed.push(...form.failed);
+    result.log.push(...form.log);
+    result.method = rpcResolved > 0 ? 'rpc+puppeteer' : 'puppeteer';
+  }
+  if (warnings.length) {
+    result.contractWarning = warnings.join(' ');
+    console.warn(`[${tag}] ⚠️ ${result.contractWarning}`);
+  }
+  return result;
+}
+
+/**
  * POST /create-inventory-urls
  * Body: { networkId: string, urls: string[] }
  * Resposta: 202 { jobId } — o trabalho roda em background, em aba própria.
@@ -284,17 +354,7 @@ app.post('/create-inventory-urls', (req, res) => {
         throw new Error('Timeout de login: ninguém fez login no GAM em 3 minutos. Tente novamente.');
       }
 
-      const result = await createInventoryUrls(page, {
-        networkId,
-        urls,
-        tag,
-        onProgress: (p) => {
-          job.done = p.done;
-          job.created = p.created;
-          job.skipped = p.skipped;
-          job.failed = p.failed;
-        },
-      });
+      const result = await runUrlsJob(page, job, networkId, urls, tag);
 
       job.result = result;
       job.status = 'done';

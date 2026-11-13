@@ -16,6 +16,10 @@ services:
       - BROWSER_DATA_DIR=/app/browser-data
       - DISPLAY=:99
       - VNC_PORT=5900
+      # Cadastro de URLs do inventário: rpc (padrão) | puppeteer (só o formulário). Ver docs/INVENTORY_URLS_RPC.md
+      - INVENTORY_URLS_MODE=${INVENTORY_URLS_MODE:-rpc}
+      # Ativa URL inativa por RPC. Só ligar com a API (etapa 9b) e o Jarvis aceitando "reativada".
+      - INVENTORY_URLS_REACTIVATE=${INVENTORY_URLS_REACTIVATE:-false}
     # Xvfb precisa de /dev/shm maior para o Chrome
     shm_size: '2gb'
 
